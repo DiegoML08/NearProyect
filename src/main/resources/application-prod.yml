@@ -1,0 +1,24 @@
+# ============================================
+# CONFIGURACIÓN DE PRODUCCIÓN
+# Las variables se configuran en el servidor
+# ============================================
+
+spring:
+  datasource:
+    url: ${POSTGRES_URL}
+    username: ${POSTGRES_USER}
+    password: ${POSTGRES_PASSWORD}
+
+  jpa:
+    show-sql: false
+  mongodb:
+    uri: ${MONGO_URI}
+
+jwt:
+  secret: ${JWT_SECRET}
+
+logging:
+  level:
+    com.near.api: INFO
+    org.springframework.web: WARN
+    org.hibernate.SQL: WARN
