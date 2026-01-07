@@ -11,6 +11,7 @@ import com.near.api.modules.auth.entity.User;
 import com.near.api.modules.auth.entity.UserDevice;
 import com.near.api.modules.auth.repository.UserDeviceRepository;
 import com.near.api.modules.auth.repository.UserRepository;
+import com.near.api.modules.wallet.service.WalletService;
 import com.near.api.shared.exception.BadRequestException;
 import com.near.api.shared.exception.UnauthorizedException;
 import lombok.RequiredArgsConstructor;
@@ -33,6 +34,8 @@ public class AuthServiceImpl implements AuthService {
     private final PasswordEncoder passwordEncoder;
     private final JwtTokenProvider jwtTokenProvider;
     private final AuthenticationManager authenticationManager;
+    private final WalletService walletService;
+
 
     @Override
     @Transactional
@@ -53,6 +56,10 @@ public class AuthServiceImpl implements AuthService {
                 .build();
 
         user = userRepository.save(user);
+
+        //Crear wallet para el usuario
+        walletService.getOrCreateWallet(user.getId());
+
 
         // Registrar dispositivo si viene el token
         if (StringUtils.hasText(request.getDeviceToken())) {
@@ -100,6 +107,7 @@ public class AuthServiceImpl implements AuthService {
     @Override
     @Transactional
     public AuthResponse loginAnonymous(AnonymousLoginRequest request) {
+
         User user;
 
         // Si tiene código anónimo previo, intentar recuperarlo
@@ -110,6 +118,8 @@ public class AuthServiceImpl implements AuthService {
             user = createAnonymousUser();
         }
 
+        //Crear wallet para el usuario
+        walletService.getOrCreateWallet(user.getId());
         // Registrar dispositivo
         if (StringUtils.hasText(request.getDeviceToken())) {
             saveUserDevice(user, request.getDeviceToken(), request.getDeviceType(),
