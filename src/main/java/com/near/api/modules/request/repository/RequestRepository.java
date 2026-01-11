@@ -22,21 +22,44 @@ import java.util.UUID;
 public interface RequestRepository extends JpaRepository<Request, UUID> {
 
     // === Búsquedas básicas ===
-    
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT r FROM Request r WHERE r.id = :id")
     Optional<Request> findByIdWithLock(@Param("id") UUID id);
 
-    Page<Request> findByRequesterIdOrderByCreatedAtDesc(UUID requesterId, Pageable pageable);
+    // === Con FETCH JOIN para evitar LazyInitializationException ===
 
-    Page<Request> findByResponderIdOrderByCreatedAtDesc(UUID responderId, Pageable pageable);
+    @Query("SELECT r FROM Request r " +
+            "LEFT JOIN FETCH r.requester " +
+            "LEFT JOIN FETCH r.responder " +
+            "WHERE r.requester.id = :requesterId " +
+            "ORDER BY r.createdAt DESC")
+    List<Request> findByRequesterIdWithUsers(@Param("requesterId") UUID requesterId);
 
-    // === Búsqueda geoespacial (requests cercanas) ===
-    
+    @Query("SELECT r FROM Request r " +
+            "LEFT JOIN FETCH r.requester " +
+            "LEFT JOIN FETCH r.responder " +
+            "WHERE r.responder.id = :responderId " +
+            "ORDER BY r.createdAt DESC")
+    List<Request> findByResponderIdWithUsers(@Param("responderId") UUID responderId);
+
+    @Query("SELECT r FROM Request r " +
+            "LEFT JOIN FETCH r.requester " +
+            "LEFT JOIN FETCH r.responder " +
+            "WHERE r.requester.id = :requesterId AND r.status IN :statuses " +
+            "ORDER BY r.createdAt DESC")
+    List<Request> findByRequesterIdAndStatusInWithUsers(
+            @Param("requesterId") UUID requesterId,
+            @Param("statuses") List<RequestStatus> statuses);
+
+    // === Búsqueda geoespacial (requests cercanas) - CORREGIDA ===
+
     @Query(value = """
         SELECT r.* FROM requests r
+        JOIN users u ON r.requester_id = u.id
         WHERE r.status = 'PENDING'
         AND r.expires_at > NOW()
+        AND r.requester_id != :userId
         AND ST_DWithin(
             r.location::geography,
             ST_SetSRID(ST_MakePoint(:lng, :lat), 4326)::geography,
@@ -48,6 +71,7 @@ public interface RequestRepository extends JpaRepository<Request, UUID> {
         )
         """, nativeQuery = true)
     List<Request> findNearbyPendingRequests(
+            @Param("userId") UUID userId,
             @Param("lat") double lat,
             @Param("lng") double lng);
 
@@ -56,6 +80,7 @@ public interface RequestRepository extends JpaRepository<Request, UUID> {
         SELECT r.* FROM requests r
         WHERE r.status = 'PENDING'
         AND r.expires_at > NOW()
+        AND r.requester_id != :userId
         AND r.trust_mode = 'TRUST'
         AND r.trust_mode_expires_at > NOW()
         AND ST_DWithin(
@@ -69,6 +94,7 @@ public interface RequestRepository extends JpaRepository<Request, UUID> {
         )
         """, nativeQuery = true)
     List<Request> findNearbyTrustModeRequests(
+            @Param("userId") UUID userId,
             @Param("lat") double lat,
             @Param("lng") double lng);
 
@@ -77,9 +103,10 @@ public interface RequestRepository extends JpaRepository<Request, UUID> {
         SELECT r.* FROM requests r
         WHERE r.status = 'PENDING'
         AND r.expires_at > NOW()
+        AND r.requester_id != :userId
         AND (
             r.trust_mode = 'ALL' 
-            OR (r.trust_mode = 'TRUST' AND r.trust_mode_expires_at <= NOW())
+            OR (r.trust_mode = 'TRUST' AND (r.trust_mode_expires_at IS NULL OR r.trust_mode_expires_at <= NOW()))
         )
         AND ST_DWithin(
             r.location::geography,
@@ -92,6 +119,7 @@ public interface RequestRepository extends JpaRepository<Request, UUID> {
         )
         """, nativeQuery = true)
     List<Request> findNearbyAllModeRequests(
+            @Param("userId") UUID userId,
             @Param("lat") double lat,
             @Param("lng") double lng);
 
@@ -108,14 +136,41 @@ public interface RequestRepository extends JpaRepository<Request, UUID> {
             @Param("lng") double lng);
 
     // === Por estado ===
-    
+
     List<Request> findByStatusAndExpiresAtBefore(RequestStatus status, OffsetDateTime time);
 
+    // === Paginación con FETCH JOIN (para evitar N+1 y LazyInit) ===
+    // Nota: Para paginación usamos CountQuery separado
+
+    @Query(value = "SELECT r FROM Request r " +
+            "LEFT JOIN FETCH r.requester " +
+            "LEFT JOIN FETCH r.responder " +
+            "WHERE r.requester.id = :requesterId " +
+            "ORDER BY r.createdAt DESC",
+            countQuery = "SELECT COUNT(r) FROM Request r WHERE r.requester.id = :requesterId")
+    Page<Request> findByRequesterIdOrderByCreatedAtDesc(@Param("requesterId") UUID requesterId, Pageable pageable);
+
+    @Query(value = "SELECT r FROM Request r " +
+            "LEFT JOIN FETCH r.requester " +
+            "LEFT JOIN FETCH r.responder " +
+            "WHERE r.responder.id = :responderId " +
+            "ORDER BY r.createdAt DESC",
+            countQuery = "SELECT COUNT(r) FROM Request r WHERE r.responder.id = :responderId")
+    Page<Request> findByResponderIdOrderByCreatedAtDesc(@Param("responderId") UUID responderId, Pageable pageable);
+
+    @Query(value = "SELECT r FROM Request r " +
+            "LEFT JOIN FETCH r.requester " +
+            "LEFT JOIN FETCH r.responder " +
+            "WHERE r.requester.id = :requesterId AND r.status IN :statuses " +
+            "ORDER BY r.createdAt DESC",
+            countQuery = "SELECT COUNT(r) FROM Request r WHERE r.requester.id = :requesterId AND r.status IN :statuses")
     Page<Request> findByRequesterIdAndStatusInOrderByCreatedAtDesc(
-            UUID requesterId, List<RequestStatus> statuses, Pageable pageable);
+            @Param("requesterId") UUID requesterId,
+            @Param("statuses") List<RequestStatus> statuses,
+            Pageable pageable);
 
     // === Estadísticas ===
-    
+
     @Query("SELECT COUNT(r) FROM Request r WHERE r.requester.id = :userId")
     Long countByRequesterId(@Param("userId") UUID userId);
 
@@ -126,7 +181,7 @@ public interface RequestRepository extends JpaRepository<Request, UUID> {
     BigDecimal calculateAverageRating(@Param("userId") UUID userId);
 
     // === Actualización de estados ===
-    
+
     @Modifying
     @Query("UPDATE Request r SET r.status = 'EXPIRED' WHERE r.status = 'PENDING' AND r.expiresAt < :now")
     int expireOldRequests(@Param("now") OffsetDateTime now);
@@ -134,4 +189,11 @@ public interface RequestRepository extends JpaRepository<Request, UUID> {
     @Modifying
     @Query("UPDATE Request r SET r.viewCount = r.viewCount + 1 WHERE r.id = :requestId")
     void incrementViewCount(@Param("requestId") UUID requestId);
+
+    // === Para buscar por ID con usuarios cargados ===
+    @Query("SELECT r FROM Request r " +
+            "LEFT JOIN FETCH r.requester " +
+            "LEFT JOIN FETCH r.responder " +
+            "WHERE r.id = :id")
+    Optional<Request> findByIdWithUsers(@Param("id") UUID id);
 }

@@ -111,13 +111,14 @@ public class RequestServiceImpl implements RequestService {
     }
 
     // ============================================
-    // OBTENER REQUEST
+    // OBTENER REQUEST - CORREGIDO
     // ============================================
-    
+
     @Override
     @Transactional
     public RequestDetailResponse getRequestById(UUID requestId, UUID viewerId) {
-        Request request = requestRepository.findById(requestId)
+        // Usar la query con FETCH JOIN
+        Request request = requestRepository.findByIdWithUsers(requestId)
                 .orElseThrow(() -> new ResourceNotFoundException("Request no encontrada"));
 
         // Registrar vista si es diferente usuario
@@ -139,6 +140,7 @@ public class RequestServiceImpl implements RequestService {
 
         return mapToDetailResponse(request, distance);
     }
+
 
     // ============================================
     // CANCELAR REQUEST
@@ -355,31 +357,32 @@ public class RequestServiceImpl implements RequestService {
     }
 
     // ============================================
-    // BÚSQUEDA GEOESPACIAL
-    // ============================================
-    
+// BÚSQUEDA GEOESPACIAL - CORREGIDA
+// ============================================
+
     @Override
     public List<NearbyRequestResponse> findNearbyRequests(UUID userId, double lat, double lng,
                                                           BigDecimal userReputation) {
         List<Request> requests;
 
-        // Si el usuario tiene buena reputación, mostrar también requests en trust mode
+        // Si el usuario tiene buena reputación, puede ver también requests en trust mode activo
         if (userReputation != null && userReputation.compareTo(MIN_TRUST_REPUTATION) >= 0) {
-            // Usuario de confianza: ver todas las requests cercanas
-            requests = requestRepository.findNearbyPendingRequests(lat, lng);
+            // Usuario de confianza: ver todas las requests cercanas (incluyendo trust mode)
+            requests = requestRepository.findNearbyPendingRequests(userId, lat, lng);
         } else {
             // Usuario normal: solo ver requests en modo "all" o trust mode expirado
-            requests = requestRepository.findNearbyAllModeRequests(lat, lng);
+            requests = requestRepository.findNearbyAllModeRequests(userId, lat, lng);
         }
 
         return requests.stream()
-                .filter(r -> !r.getRequester().getId().equals(userId)) // No mostrar propias
                 .map(r -> {
                     Double distance = requestRepository.calculateDistance(r.getId(), lat, lng);
+                    // Cargar el requester si es necesario
                     return mapToNearbyResponse(r, distance);
                 })
                 .collect(Collectors.toList());
     }
+
 
     // ============================================
     // CALIFICACIONES
@@ -504,22 +507,25 @@ public class RequestServiceImpl implements RequestService {
     }
 
     // ============================================
-    // HISTORIAL
-    // ============================================
-    
+// HISTORIAL - CORREGIDO
+// ============================================
+
     @Override
+    @Transactional(readOnly = true)
     public Page<RequestResponse> getMyRequestsAsRequester(UUID userId, Pageable pageable) {
         return requestRepository.findByRequesterIdOrderByCreatedAtDesc(userId, pageable)
                 .map(r -> mapToResponse(r, null));
     }
 
     @Override
+    @Transactional(readOnly = true)
     public Page<RequestResponse> getMyRequestsAsResponder(UUID userId, Pageable pageable) {
         return requestRepository.findByResponderIdOrderByCreatedAtDesc(userId, pageable)
                 .map(r -> mapToResponse(r, null));
     }
 
     @Override
+    @Transactional(readOnly = true)
     public Page<RequestResponse> getActiveRequests(UUID userId, Pageable pageable) {
         List<RequestStatus> activeStatuses = List.of(
                 RequestStatus.PENDING,
@@ -703,6 +709,22 @@ public class RequestServiceImpl implements RequestService {
         String preview = request.getDescription().length() > 100 ?
                 request.getDescription().substring(0, 100) + "..." : request.getDescription();
 
+        // Obtener datos del requester de forma segura
+        User requester = request.getRequester();
+        String requesterDisplayName;
+        BigDecimal requesterReputation;
+        boolean isAnonymous = request.getIsAnonymousRequester() != null && request.getIsAnonymousRequester();
+
+        if (requester != null) {
+            requesterDisplayName = isAnonymous ?
+                    "Anónimo " + (requester.getAnonymousCode() != null ? requester.getAnonymousCode() : "***") :
+                    (requester.getFullName() != null ? requester.getFullName() : "Usuario");
+            requesterReputation = requester.getReputationStars();
+        } else {
+            requesterDisplayName = "Usuario";
+            requesterReputation = BigDecimal.ZERO;
+        }
+
         return NearbyRequestResponse.builder()
                 .id(request.getId())
                 .latitude(request.getLocation().getY())
@@ -717,14 +739,13 @@ public class RequestServiceImpl implements RequestService {
                 .rewardNears(request.getRewardNears())
                 .trustMode(request.getTrustMode())
                 .isTrustModeActive(request.isTrustModeActive())
-                .requesterDisplayName(request.getIsAnonymousRequester() ?
-                        "Anónimo " + request.getRequester().getAnonymousCode() :
-                        request.getRequester().getFullName())
-                .requesterReputation(request.getRequester().getReputationStars())
-                .isAnonymousRequester(request.getIsAnonymousRequester())
+                .requesterDisplayName(requesterDisplayName)
+                .requesterReputation(requesterReputation)
+                .isAnonymousRequester(isAnonymous)
                 .createdAt(request.getCreatedAt())
                 .build();
     }
+
 
     private RequestResponse.RequesterInfo mapRequesterInfo(Request request) {
         User requester = request.getRequester();
