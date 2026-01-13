@@ -2,6 +2,7 @@ package com.near.api.modules.request.service;
 
 import com.near.api.modules.auth.entity.User;
 import com.near.api.modules.auth.repository.UserRepository;
+import com.near.api.modules.chat.service.ChatService;
 import com.near.api.modules.request.dto.request.*;
 import com.near.api.modules.request.dto.response.*;
 import com.near.api.modules.request.entity.*;
@@ -45,7 +46,7 @@ public class RequestServiceImpl implements RequestService {
     private final RequestViewRepository requestViewRepository;
     private final UserRepository userRepository;
     private final WalletService walletService;
-
+    private final ChatService chatService;
     private static final GeometryFactory geometryFactory = new GeometryFactory(new PrecisionModel(), 4326);
     private static final BigDecimal MIN_TRUST_REPUTATION = new BigDecimal("4.0");
 
@@ -322,11 +323,58 @@ public class RequestServiceImpl implements RequestService {
 
         request = requestRepository.save(request);
 
+        // ✅ CREAR CONVERSACIÓN AUTOMÁTICAMENTE
+        try {
+            chatService.createConversation(
+                    requestId,
+                    request.getRequester().getId(),
+                    request.getResponder().getId(),
+                    request.getRewardNears()
+            );
+            log.info("Conversación creada para request {}", requestId);
+        } catch (Exception e) {
+            log.error("Error creando conversación para request {}: {}", requestId, e.getMessage());
+            // No lanzamos excepción para no afectar la confirmación de la request
+        }
+
         log.info("Request {} completada. Pago de {} Nears transferido a {}",
                 requestId, request.getFinalReward(), request.getResponder().getId());
 
         return mapToDetailResponse(request, null);
     }
+    /*public RequestDetailResponse confirmDelivery(UUID requestId, UUID requesterId) {
+        Request request = requestRepository.findByIdWithLock(requestId)
+                .orElseThrow(() -> new ResourceNotFoundException("Request no encontrada"));
+
+        // Validaciones
+        if (!request.getRequester().getId().equals(requesterId)) {
+            throw new UnauthorizedException("No eres el creador de esta request");
+        }
+
+        if (request.getStatus() != RequestStatus.DELIVERED) {
+            throw new BadRequestException("No hay contenido pendiente de confirmar");
+        }
+
+        // Procesar pago al responder
+        walletService.releaseFrozenBalance(requesterId, BigDecimal.valueOf(request.getRewardNears()));
+        walletService.processRequestEarning(
+                request.getResponder().getId(),
+                requestId,
+                BigDecimal.valueOf(request.getRewardNears()),
+                BigDecimal.valueOf(request.getCommissionAmount())
+        );
+
+        // Actualizar estado
+        request.setStatus(RequestStatus.COMPLETED);
+        request.setCompletedAt(OffsetDateTime.now());
+
+        request = requestRepository.save(request);
+
+        log.info("Request {} completada. Pago de {} Nears transferido a {}",
+                requestId, request.getFinalReward(), request.getResponder().getId());
+
+        return mapToDetailResponse(request, null);
+    }*/
 
     // ============================================
     // RECHAZAR ENTREGA

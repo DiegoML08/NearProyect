@@ -73,7 +73,11 @@ public class Transaction {
         REQUEST_EARNING,    // Ganancia por responder una request
         REQUEST_REFUND,     // Reembolso de request cancelada/expirada
         COMMISSION,         // Comisión de la plataforma
-        BONUS               // Bonificación/promoción
+        BONUS,              // Bonificación/promoción
+        TIP_SENT,           // Propina enviada en chat
+        TIP_RECEIVED,       // Propina recibida en chat
+        MEDIA_PURCHASE,     // Compra de media bloqueada
+        MEDIA_SALE          // Venta de media bloqueada
     }
 
     public enum TransactionStatus {
@@ -83,4 +87,5 @@ public class Transaction {
         CANCELLED,
         REFUNDED
     }
+
 }

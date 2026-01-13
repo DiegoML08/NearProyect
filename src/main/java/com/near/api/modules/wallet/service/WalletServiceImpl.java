@@ -329,6 +329,144 @@ public class WalletServiceImpl implements WalletService {
                 .orElse(false);
     }
 
+    // === Transferencias de Chat ===
+
+    @Override
+    @Transactional
+    public TransactionResponse processTipTransfer(UUID senderId, UUID recipientId,
+                                                  BigDecimal amount, String conversationId) {
+        // Validar que no se envíe propina a sí mismo
+        if (senderId.equals(recipientId)) {
+            throw new BadRequestException("No puedes enviarte una propina a ti mismo");
+        }
+
+        // Obtener wallet del sender con lock
+        Wallet senderWallet = walletRepository.findByUserIdWithLock(senderId)
+                .orElseThrow(() -> new ResourceNotFoundException("Wallet del remitente no encontrada"));
+
+        // Verificar saldo suficiente
+        if (senderWallet.getWithdrawableBalance().compareTo(amount) < 0) {
+            throw new BadRequestException("Saldo insuficiente para enviar propina");
+        }
+
+        // Obtener o crear wallet del recipient
+        Wallet recipientWallet = walletRepository.findByUserIdWithLock(recipientId)
+                .orElseGet(() -> createWallet(recipientId));
+
+        // Descontar del sender
+        senderWallet.subtractBalance(amount);
+        walletRepository.save(senderWallet);
+
+        // Crear transacción de envío (sender)
+        Transaction sentTransaction = Transaction.builder()
+                .wallet(senderWallet)
+                .transactionType(TransactionType.TIP_SENT)
+                .amount(amount.negate()) // Negativo porque es salida
+                .status(TransactionStatus.COMPLETED)
+                .description("Propina enviada en chat")
+                .completedAt(OffsetDateTime.now())
+                .build();
+        transactionRepository.save(sentTransaction);
+
+        // Agregar al recipient
+        recipientWallet.addBalance(amount);
+        walletRepository.save(recipientWallet);
+
+        // Crear transacción de recepción (recipient)
+        Transaction receivedTransaction = Transaction.builder()
+                .wallet(recipientWallet)
+                .transactionType(TransactionType.TIP_RECEIVED)
+                .amount(amount) // Positivo porque es entrada
+                .status(TransactionStatus.COMPLETED)
+                .description("Propina recibida en chat")
+                .completedAt(OffsetDateTime.now())
+                .build();
+        transactionRepository.save(receivedTransaction);
+
+        log.info("Propina transferida: {} Nears de {} a {} en conversación {}",
+                amount, senderId, recipientId, conversationId);
+
+        return mapToTransactionResponse(sentTransaction);
+    }
+
+    @Override
+    @Transactional
+    public TransactionResponse processMediaPurchase(UUID buyerId, UUID sellerId,
+                                                    BigDecimal amount, String conversationId,
+                                                    String messageId) {
+        // Validar que no se compre su propio contenido
+        if (buyerId.equals(sellerId)) {
+            throw new BadRequestException("No puedes comprar tu propio contenido");
+        }
+
+        // Obtener wallet del buyer con lock
+        Wallet buyerWallet = walletRepository.findByUserIdWithLock(buyerId)
+                .orElseThrow(() -> new ResourceNotFoundException("Wallet del comprador no encontrada"));
+
+        // Verificar saldo suficiente
+        if (buyerWallet.getWithdrawableBalance().compareTo(amount) < 0) {
+            throw new BadRequestException("Saldo insuficiente para desbloquear contenido");
+        }
+
+        // Obtener o crear wallet del seller
+        Wallet sellerWallet = walletRepository.findByUserIdWithLock(sellerId)
+                .orElseGet(() -> createWallet(sellerId));
+
+        // Calcular comisión (15%)
+        BigDecimal commissionRate = new BigDecimal("0.15");
+        BigDecimal commission = amount.multiply(commissionRate).setScale(2, RoundingMode.HALF_UP);
+        BigDecimal sellerAmount = amount.subtract(commission);
+
+        // Descontar del buyer
+        buyerWallet.subtractBalance(amount);
+        walletRepository.save(buyerWallet);
+
+        // Crear transacción de compra (buyer)
+        Transaction purchaseTransaction = Transaction.builder()
+                .wallet(buyerWallet)
+                .transactionType(TransactionType.MEDIA_PURCHASE)
+                .amount(amount.negate()) // Negativo porque es salida
+                .status(TransactionStatus.COMPLETED)
+                .description("Desbloqueo de contenido multimedia")
+                .completedAt(OffsetDateTime.now())
+                .build();
+        transactionRepository.save(purchaseTransaction);
+
+        // Agregar al seller (menos comisión)
+        sellerWallet.addBalance(sellerAmount);
+        walletRepository.save(sellerWallet);
+
+        // Crear transacción de venta (seller)
+        Transaction saleTransaction = Transaction.builder()
+                .wallet(sellerWallet)
+                .transactionType(TransactionType.MEDIA_SALE)
+                .amount(sellerAmount) // Positivo porque es entrada
+                .commissionAmount(commission)
+                .commissionPercentage(commissionRate.multiply(BigDecimal.valueOf(100)))
+                .status(TransactionStatus.COMPLETED)
+                .description("Venta de contenido multimedia")
+                .completedAt(OffsetDateTime.now())
+                .build();
+        transactionRepository.save(saleTransaction);
+
+        // Crear transacción de comisión
+        Transaction commissionTransaction = Transaction.builder()
+                .wallet(sellerWallet)
+                .transactionType(TransactionType.COMMISSION)
+                .amount(commission)
+                .status(TransactionStatus.COMPLETED)
+                .description("Comisión por venta de contenido (15%)")
+                .completedAt(OffsetDateTime.now())
+                .build();
+        transactionRepository.save(commissionTransaction);
+
+        log.info("Media desbloqueada: {} Nears de {} a {} (comisión: {}) - mensaje {} en conversación {}",
+                amount, buyerId, sellerId, commission, messageId, conversationId);
+
+        return mapToTransactionResponse(purchaseTransaction);
+    }
+
+
     // === Mappers ===
 
     private WalletResponse mapToWalletResponse(Wallet wallet) {

@@ -34,6 +34,18 @@ public interface WalletService {
     
     TransactionResponse processRequestRefund(UUID requesterId, UUID requestId, BigDecimal amount);
 
+// === Transferencias de Chat ===
+
+    /**
+     * Procesa una propina enviada en el chat
+     */
+    TransactionResponse processTipTransfer(UUID senderId, UUID recipientId, BigDecimal amount, String conversationId);
+
+    /**
+     * Procesa la compra de media bloqueada en el chat
+     */
+    TransactionResponse processMediaPurchase(UUID buyerId, UUID sellerId, BigDecimal amount, String conversationId, String messageId);
+// ================================
     // Congelar/Descongelar saldo
     void freezeBalance(UUID userId, BigDecimal amount);
     
