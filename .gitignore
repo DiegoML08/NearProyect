@@ -52,3 +52,9 @@ target/
 # Logs
 *.log
 logs/
+
+# Firebase credentials (NUNCA subir a Git)
+src/main/resources/firebase/
+*.json
+!package.json
+!package-lock.json

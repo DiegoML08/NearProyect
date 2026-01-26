@@ -35,6 +35,8 @@ import java.util.List;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
+import com.near.api.modules.notification.service.NotificationService;
+
 @Service
 @RequiredArgsConstructor
 @Slf4j
@@ -49,6 +51,7 @@ public class RequestServiceImpl implements RequestService {
     private final ChatService chatService;
     private static final GeometryFactory geometryFactory = new GeometryFactory(new PrecisionModel(), 4326);
     private static final BigDecimal MIN_TRUST_REPUTATION = new BigDecimal("4.0");
+    private final NotificationService notificationService;
 
     // ============================================
     // CREAR REQUEST
@@ -100,6 +103,28 @@ public class RequestServiceImpl implements RequestService {
         request.calculateCommission();
 
         request = requestRepository.save(request);
+
+        try {
+            long remainingMinutes = java.time.Duration.between(
+                    java.time.OffsetDateTime.now(),
+                    request.getExpiresAt()
+            ).toMinutes();
+
+            notificationService.notifyNearbyUsers(
+                    request.getId(),
+                    requesterId,
+                    dto.getLatitude(),
+                    dto.getLongitude(),
+                    dto.getRadiusMeters(),
+                    dto.getLocationAddress(),
+                    dto.getRewardNears(),
+                    remainingMinutes,
+                    dto.getDescription(),
+                    dto.getTrustMode()
+            );
+        } catch (Exception e) {
+            log.warn("Error enviando notificación NEARBY_REQUEST: {}", e.getMessage());
+        }
 
         // Congelar el saldo del requester
         walletService.processRequestPayment(requesterId, request.getId(), 
@@ -229,6 +254,18 @@ public class RequestServiceImpl implements RequestService {
 
         request = requestRepository.save(request);
 
+        try {
+            String responderName = getDisplayName(request.getResponder());
+            notificationService.notifyRequestAccepted(
+                    request.getRequester().getId(),
+                    requestId,
+                    responderName,
+                    request.getLocationAddress()
+            );
+        } catch (Exception e) {
+            log.warn("Error enviando notificación REQUEST_ACCEPTED: {}", e.getMessage());
+        }
+
         log.info("Request {} aceptada por usuario {}", requestId, responderId);
 
         return mapToDetailResponse(request, distance);
@@ -284,6 +321,18 @@ public class RequestServiceImpl implements RequestService {
 
         request = requestRepository.save(request);
 
+        try {
+            String responderName = getDisplayName(request.getResponder());
+            notificationService.notifyContentDelivered(
+                    request.getRequester().getId(),
+                    requestId,
+                    responderName,
+                    request.getLocationAddress()
+            );
+        } catch (Exception e) {
+            log.warn("Error enviando notificación CONTENT_DELIVERED: {}", e.getMessage());
+        }
+
         log.info("Contenido entregado para request {} por usuario {}", requestId, responderId);
 
         return mapToDetailResponse(request, null);
@@ -322,6 +371,16 @@ public class RequestServiceImpl implements RequestService {
         request.setCompletedAt(OffsetDateTime.now());
 
         request = requestRepository.save(request);
+
+        try {
+            notificationService.notifyDeliveryConfirmed(
+                    request.getResponder().getId(),
+                    requestId,
+                    request.getRewardNears()
+            );
+        } catch (Exception e) {
+            log.warn("Error enviando notificación DELIVERY_CONFIRMED: {}", e.getMessage());
+        }
 
         // ✅ CREAR CONVERSACIÓN AUTOMÁTICAMENTE
         try {
@@ -845,5 +904,18 @@ public class RequestServiceImpl implements RequestService {
                 .isVerified(media.getIsVerified())
                 .createdAt(media.getCreatedAt())
                 .build();
+    }
+
+    private String getDisplayName(User user) {
+        if (user == null) return "Usuario";
+        if (user.getIsAnonymous()) {
+            return "Usuario #" + (user.getAnonymousCode() != null
+                    ? user.getAnonymousCode().substring(0, 4)
+                    : "????");
+        }
+        if (user.getFullName() != null && !user.getFullName().isEmpty()) {
+            return user.getFullName().split(" ")[0];
+        }
+        return "Usuario";
     }
 }

@@ -22,3 +22,7 @@ logging:
     com.near.api: INFO
     org.springframework.web: WARN
     org.hibernate.SQL: WARN
+
+firebase:
+  service-account:
+    base64: ${FIREBASE_SERVICE_ACCOUNT_BASE64}

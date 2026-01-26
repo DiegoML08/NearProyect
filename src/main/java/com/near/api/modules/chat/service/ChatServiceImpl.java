@@ -40,6 +40,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.stream.Collectors;
+import com.near.api.modules.notification.service.NotificationService;
 
 @Service
 @RequiredArgsConstructor
@@ -51,6 +52,7 @@ public class ChatServiceImpl implements ChatService {
     private final UserRepository userRepository;
     private final WalletService walletService;
     private final SimpMessagingTemplate messagingTemplate;
+    private final NotificationService notificationService;
 
     // Duración de la conversación: 5 horas
     private static final Duration CONVERSATION_DURATION = Duration.ofHours(5);
@@ -228,6 +230,21 @@ public class ChatServiceImpl implements ChatService {
         MessageResponse response = mapToMessageResponse(message, conversation, senderId);
         notifyNewMessage(conversationId, response);
 
+        try {
+            Conversation.Participant otherParticipant = getOtherParticipant(conversation, senderId);
+            String senderName = getSenderDisplayName(conversation, senderId);
+
+            notificationService.notifyNewMessage(
+                    otherParticipant.getUserId(),
+                    conversationId,
+                    senderName,
+                    request.getText(),
+                    false
+            );
+        } catch (Exception e) {
+            log.warn("Error enviando notificación push NEW_MESSAGE: {}", e.getMessage());
+        }
+
         log.info("Mensaje de texto enviado: {} en conversación {} por usuario {}",
                 message.getId(), conversationId, senderId);
 
@@ -320,10 +337,61 @@ public class ChatServiceImpl implements ChatService {
         MessageResponse response = mapToMessageResponse(message, conversation, senderId);
         notifyNewMessage(conversationId, response);
 
+        try {
+            Conversation.Participant otherParticipant = getOtherParticipant(conversation, senderId);
+            String senderName = getSenderDisplayName(conversation, senderId);
+            String mediaType = request.getMediaType() != null ? request.getMediaType().name() : "IMAGE";
+
+            notificationService.notifyNewMessage(
+                    otherParticipant.getUserId(),
+                    conversationId,
+                    senderName,
+                    mediaType,
+                    true
+            );
+        } catch (Exception e) {
+            log.warn("Error enviando notificación push NEW_MESSAGE: {}", e.getMessage());
+        }
+
         log.info("Mensaje multimedia enviado: {} en conversación {} por usuario {} (precio: {} Nears)",
                 message.getId(), conversationId, senderId, priceNears);
 
         return response;
+    }
+
+    /**
+     * Obtiene el nombre para mostrar del sender en una conversación.
+     */
+    private String getSenderDisplayName(Conversation conversation, UUID senderId) {
+        if (conversation == null || senderId == null) {
+            return "Usuario";
+        }
+
+        // Buscar el participante que envía el mensaje
+        Conversation.Participant sender = null;
+        for (Conversation.Participant p : conversation.getParticipants()) {
+            if (p.getUserId().equals(senderId)) {
+                sender = p;
+                break;
+            }
+        }
+
+        if (sender == null) {
+            return "Usuario";
+        }
+
+        // Si el participante está en modo anónimo
+        if (sender.getIsAnonymous() != null && sender.getIsAnonymous()) {
+            return "Usuario anónimo";
+        }
+
+        // Usar el displayName del participante
+        if (sender.getDisplayName() != null && !sender.getDisplayName().isEmpty()) {
+            String[] parts = sender.getDisplayName().split(" ");
+            return parts[0]; // Solo el primer nombre
+        }
+
+        return "Usuario";
     }
 
     @Override
