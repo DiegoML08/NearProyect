@@ -40,32 +40,38 @@ public class NotificationServiceImpl implements NotificationService {
 
     @Override
     @Transactional
-    public void registerToken(UUID userId, String fcmToken, String deviceId, String deviceType, String deviceName) {
-        log.debug("Registrando token FCM para usuario {}: {}", userId, fcmToken.substring(0, 20) + "...");
+    public void registerToken(UUID userId, String fcmToken, String deviceId,
+                              String deviceType, String deviceName) {
+        log.debug("Registrando token FCM para usuario {}", userId);
 
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new IllegalArgumentException("Usuario no encontrado: " + userId));
 
-        // Verificar si el token ya existe (podría estar asociado a otro usuario)
-        fcmTokenRepository.findByToken(fcmToken).ifPresent(existingToken -> {
+        // ✅ Usar Optional directamente en vez de ifPresent
+        var existingTokenOpt = fcmTokenRepository.findByToken(fcmToken);
+
+        if (existingTokenOpt.isPresent()) {
+            FcmToken existingToken = existingTokenOpt.get();
+
             if (!existingToken.getUser().getId().equals(userId)) {
-                // El token estaba asociado a otro usuario, lo desactivamos
-                log.info("Token FCM transferido de usuario {} a usuario {}", 
+                log.info("Token FCM transferido de usuario {} a usuario {}",
                         existingToken.getUser().getId(), userId);
                 fcmTokenRepository.deactivateToken(fcmToken);
+                // Continúa abajo para crear nuevo token
             } else {
-                // Ya existe para este usuario, actualizamos
+                // Ya existe para este usuario → actualizar y SALIR
                 existingToken.setIsActive(true);
                 existingToken.setDeviceId(deviceId);
                 existingToken.setDeviceType(deviceType);
                 existingToken.setDeviceName(deviceName);
                 existingToken.setLastUsedAt(OffsetDateTime.now());
                 fcmTokenRepository.save(existingToken);
-                return;
+                log.info("Token FCM actualizado para usuario {}", userId);
+                return; // ✅ Este return SÍ sale del método
             }
-        });
+        }
 
-        // Crear nuevo token
+        // Solo se ejecuta si NO existía o fue transferido
         FcmToken newToken = FcmToken.builder()
                 .user(user)
                 .token(fcmToken)
