@@ -42,6 +42,9 @@ import java.util.UUID;
 import java.util.stream.Collectors;
 import com.near.api.modules.notification.service.NotificationService;
 
+import com.near.api.modules.request.entity.RequestMedia;
+import com.near.api.modules.request.repository.RequestMediaRepository;
+
 @Service
 @RequiredArgsConstructor
 @Slf4j
@@ -53,6 +56,7 @@ public class ChatServiceImpl implements ChatService {
     private final WalletService walletService;
     private final SimpMessagingTemplate messagingTemplate;
     private final NotificationService notificationService;
+    private final RequestMediaRepository requestMediaRepository;
 
     // Duración de la conversación: 5 horas
     private static final Duration CONVERSATION_DURATION = Duration.ofHours(5);
@@ -129,6 +133,78 @@ public class ChatServiceImpl implements ChatService {
         // Enviar mensaje del sistema
         sendSystemMessage(conversation.getId(), SystemEventType.CONVERSATION_STARTED,
                 "La conversación estará disponible por 5 horas");
+
+        try {
+            List<RequestMedia> requestMediaList = requestMediaRepository.findByRequestIdOrderByCreatedAtAsc(requestId);
+
+            for (RequestMedia media : requestMediaList) {
+                // Determinar tipo de mensaje según tipo de media
+                MessageType msgType = media.getMediaType() == RequestMedia.MediaType.VIDEO
+                        ? MessageType.VIDEO
+                        : MessageType.IMAGE;
+
+                // Generar thumbnail si no existe
+                String thumbnailUrl = media.getThumbnailUrl();
+                if (thumbnailUrl == null && media.getUrl() != null) {
+                    if (msgType == MessageType.IMAGE) {
+                        thumbnailUrl = media.getUrl().replace("/upload/", "/upload/c_thumb,w_400,h_400/");
+                    } else {
+                        thumbnailUrl = media.getUrl()
+                                .replace("/upload/", "/upload/c_thumb,w_400/")
+                                .replace(".mp4", ".jpg")
+                                .replace(".mov", ".jpg");
+                    }
+                }
+
+                // Crear objeto Media para el mensaje
+                Message.Media messageMedia = Message.Media.builder()
+                        .url(media.getUrl())
+                        .publicId(media.getPublicId())
+                        .thumbnailUrl(thumbnailUrl)
+                        .blurredUrl(null) // No blurred — es contenido gratuito del delivery
+                        .mediaType(msgType == MessageType.IMAGE
+                                ? Message.MediaType.IMAGE
+                                : Message.MediaType.VIDEO)
+                        .sizeBytes(media.getFileSizeBytes())
+                        .width(media.getWidth())
+                        .height(media.getHeight())
+                        .durationSeconds(media.getDurationSeconds())
+                        .priceNears(0)
+                        .lockStatus(MediaLockStatus.UNLOCKED)
+                        .build();
+
+                // Crear el mensaje — el sender es el RESPONDER (quien entregó el contenido)
+                Message mediaMessage = Message.builder()
+                        .conversationId(conversation.getId())
+                        .senderId(responderId)
+                        .messageType(msgType)
+                        .content(Message.Content.builder()
+                                .text(null)
+                                .media(messageMedia)
+                                .build())
+                        .status(MessageStatus.SENT)
+                        .hasTip(false)
+                        .tipAmount(0)
+                        .expiresAt(conversation.getExpiresAt())
+                        .build();
+
+                messageRepository.save(mediaMessage);
+
+                // Actualizar metadata de la conversación
+                updateConversationAfterMessage(conversation, mediaMessage, responderId);
+                conversationRepository.incrementMediaCount(conversation.getId());
+            }
+
+            if (!requestMediaList.isEmpty()) {
+                log.info("Se insertaron {} archivos multimedia de la request como mensajes iniciales en conversación {}",
+                        requestMediaList.size(), conversation.getId());
+            }
+
+        } catch (Exception e) {
+            log.error("Error insertando media de la request en la conversación {}: {}",
+                    conversation.getId(), e.getMessage());
+            // No lanzamos excepción para no afectar la creación de la conversación
+        }
 
         return mapToConversationResponse(conversation, requesterId);
     }
