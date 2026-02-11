@@ -67,6 +67,10 @@ logging:
     org.springframework.web: INFO
     org.hibernate.SQL: DEBUG
     org.hibernate.type.descriptor.sql.BasicBinder: TRACE
+    org.springframework.web.socket: DEBUG
+    org.springframework.messaging: DEBUG
+    org.springframework.messaging.simp: DEBUG
+    org.springframework.web.socket.messaging: DEBUG
 
 
 firebase:
