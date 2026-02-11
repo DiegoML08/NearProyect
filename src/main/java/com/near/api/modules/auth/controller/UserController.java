@@ -2,6 +2,7 @@ package com.near.api.modules.auth.controller;
 
 import com.near.api.modules.auth.dto.request.UpdateLocationRequest;
 import com.near.api.modules.auth.dto.response.LocationResponse;
+import com.near.api.modules.auth.dto.response.UserResponse;
 import com.near.api.modules.auth.entity.User;
 import com.near.api.modules.auth.repository.UserRepository;
 import com.near.api.modules.notification.dto.NotificationData;
@@ -22,6 +23,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.OffsetDateTime;
+import java.util.Map;
 import java.util.UUID;
 
 @RestController
@@ -34,6 +36,45 @@ public class UserController {
     private final NotificationService notificationService;
 
     private static final GeometryFactory geometryFactory = new GeometryFactory(new PrecisionModel(), 4326);
+
+    // ============================================
+    // PERFIL DEL USUARIO ACTUAL
+    // ============================================
+
+    /**
+     * Obtener el perfil del usuario autenticado
+     *
+     * GET /api/v1/users/me
+     */
+    @GetMapping("/me")
+    public ResponseEntity<ApiResponse<UserResponse>> getCurrentUser(
+            @AuthenticationPrincipal UserDetails userDetails
+    ) {
+        UUID userId = UUID.fromString(userDetails.getUsername());
+
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new ResourceNotFoundException("Usuario no encontrado"));
+
+        UserResponse response = UserResponse.builder()
+                .id(user.getId())
+                .isAnonymous(user.getIsAnonymous())
+                .anonymousCode(user.getAnonymousCode())
+                .email(user.getEmail())
+                .fullName(user.getFullName())
+                .profilePhotoUrl(user.getProfilePhotoUrl())
+                .phoneNumber(user.getPhoneNumber())
+                .reputationStars(user.getReputationStars())
+                .totalRatingsReceived(user.getTotalRatingsReceived())
+                .isVerified(user.getIsVerified())
+                .language(user.getLanguage())
+                .build();
+
+        return ResponseEntity.ok(ApiResponse.success(response));
+    }
+
+    // ============================================
+    // UBICACIÓN
+    // ============================================
 
     /**
      * Actualizar la ubicación del usuario actual
@@ -100,6 +141,10 @@ public class UserController {
         return ResponseEntity.ok(ApiResponse.success(response));
     }
 
+    // ============================================
+    // ENDPOINTS DE PRUEBA (Notificaciones)
+    // ============================================
+
     /**
      * ENDPOINT DE PRUEBA: Enviar una notificación de prueba al usuario actual
      *
@@ -118,10 +163,10 @@ public class UserController {
 
         // Crear notificación de prueba
         NotificationData notification = NotificationData.builder()
-                .type(NotificationData.NotificationType.DELIVERY_CONFIRMED) // Usamos un tipo existente
+                .type(NotificationData.NotificationType.DELIVERY_CONFIRMED)
                 .title("🧪 Notificación de Prueba")
                 .body("¡Las notificaciones están funcionando correctamente!")
-                .data(java.util.Map.of(
+                .data(Map.of(
                         "type", "TEST",
                         "requestId", UUID.randomUUID().toString(),
                         "earnedNears", "100",
@@ -159,19 +204,20 @@ public class UserController {
                 .type(NotificationData.NotificationType.DELIVERY_CONFIRMED)
                 .title("🧪 Test Directo a Token")
                 .body("Si ves esto, FCM funciona correctamente!")
-                .data(java.util.Map.of(
+                .data(Map.of(
                         "type", "TEST",
-                        "requestId", UUID.randomUUID().toString(),
-                        "earnedNears", "50"
+                        "timestamp", OffsetDateTime.now().toString()
                 ))
                 .build();
 
         try {
             notificationService.sendToToken(token, notification);
-            log.info("✅ Notificación enviada al token");
-            return ResponseEntity.ok(ApiResponse.success("Notificación enviada al token", "OK"));
+            return ResponseEntity.ok(ApiResponse.success(
+                    "Notificación enviada al token.",
+                    "OK"
+            ));
         } catch (Exception e) {
-            log.error("❌ Error: {}", e.getMessage(), e);
+            log.error("❌ Error enviando notificación al token: {}", e.getMessage(), e);
             return ResponseEntity.internalServerError()
                     .body(ApiResponse.error("Error: " + e.getMessage()));
         }
