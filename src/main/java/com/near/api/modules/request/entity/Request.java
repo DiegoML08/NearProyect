@@ -108,6 +108,10 @@ public class Request {
     @Column(name = "accepted_at")
     private OffsetDateTime acceptedAt;
 
+    //Deadline para que el responder envíe contenido (acceptedAt + 5 min)
+    @Column(name = "accept_deadline_at")
+    private OffsetDateTime acceptDeadlineAt;
+
     @Column(name = "delivered_at")
     private OffsetDateTime deliveredAt;
 

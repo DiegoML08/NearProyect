@@ -27,8 +27,12 @@ public class NotificationData {
         REQUEST_ACCEPTED,    // Alguien aceptó tu request
         CONTENT_DELIVERED,   // El responder entregó contenido
         DELIVERY_CONFIRMED,  // El requester confirmó la entrega (pago realizado)
-        NEW_MESSAGE          // Nuevo mensaje en el chat
-    }
+        NEW_MESSAGE,          // Nuevo mensaje en el chat
+
+        REQUEST_CANCELLED,    //
+        REQUEST_RELEASED      //
+
+        }
 
     private NotificationType type;
     private String title;
@@ -38,6 +42,36 @@ public class NotificationData {
     // ============================================
     // Factory Methods para cada tipo de notificación
     // ============================================
+
+    /**
+     * Notificación al responder cuando el requester cancela la request
+     */
+    public static NotificationData requestCancelled(UUID requestId, String locationAddress) {
+        return NotificationData.builder()
+                .type(NotificationType.REQUEST_CANCELLED)
+                .title("Request cancelada")
+                .body("El solicitante canceló la request en " + locationAddress)
+                .data(Map.of(
+                        "type", "REQUEST_CANCELLED",
+                        "requestId", requestId.toString()
+                ))
+                .build();
+    }
+
+    /**
+     * Notificación al responder cuando la request es liberada
+     */
+    public static NotificationData requestReleased(UUID requestId, String reason) {
+        return NotificationData.builder()
+                .type(NotificationType.REQUEST_RELEASED)
+                .title("Request liberada")
+                .body("La request fue liberada: " + reason)
+                .data(Map.of(
+                        "type", "REQUEST_RELEASED",
+                        "requestId", requestId.toString()
+                ))
+                .build();
+    }
 
     /**
      * Notificación para usuarios cercanos cuando se crea una nueva request

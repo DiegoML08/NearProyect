@@ -3,6 +3,7 @@ package com.near.api.modules.request.service;
 import com.near.api.modules.auth.entity.User;
 import com.near.api.modules.auth.repository.UserRepository;
 import com.near.api.modules.chat.service.ChatService;
+import com.near.api.modules.notification.dto.NotificationData;
 import com.near.api.modules.request.dto.request.*;
 import com.near.api.modules.request.dto.response.*;
 import com.near.api.modules.request.entity.*;
@@ -34,7 +35,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.UUID;
 import java.util.stream.Collectors;
-
+import com.near.api.modules.notification.dto.NotificationData;
 import com.near.api.modules.notification.service.NotificationService;
 
 @Service
@@ -183,10 +184,14 @@ public class RequestServiceImpl implements RequestService {
             throw new UnauthorizedException("Solo el creador puede cancelar la request");
         }
 
-        // Solo se puede cancelar si está pendiente
-        if (request.getStatus() != RequestStatus.PENDING) {
-            throw new BadRequestException("Solo se pueden cancelar requests pendientes");
+
+        if (request.getStatus() != RequestStatus.PENDING && request.getStatus() != RequestStatus.ACCEPTED) {
+            throw new BadRequestException("Solo se pueden cancelar requests pendientes o aceptadas");
         }
+
+        boolean wasAccepted = request.getStatus() == RequestStatus.ACCEPTED;
+        UUID oldResponderId = wasAccepted && request.getResponder() != null
+                ? request.getResponder().getId() : null;
 
         User canceller = userRepository.findById(userId).orElseThrow();
 
@@ -195,10 +200,29 @@ public class RequestServiceImpl implements RequestService {
         request.setCancelledBy(canceller);
         request.setCancellationReason(reason);
 
+        if (wasAccepted) {
+            request.setResponder(null);
+            request.setAcceptedAt(null);
+            request.setAcceptDeadlineAt(null);
+        }
+
         requestRepository.save(request);
 
         // Reembolsar al requester
         walletService.processRequestRefund(userId, requestId, BigDecimal.valueOf(request.getRewardNears()));
+
+        //Notificar al responder si estaba aceptada
+
+        if (oldResponderId != null) {
+            try {
+                notificationService.sendToUser(
+                        oldResponderId,
+                        NotificationData.requestCancelled(requestId, request.getLocationAddress())
+                );
+            } catch (Exception e) {
+                log.warn("Error notificando cancelación: {}", e.getMessage());
+            }
+        }
 
         log.info("Request {} cancelada por usuario {}", requestId, userId);
     }
@@ -250,6 +274,7 @@ public class RequestServiceImpl implements RequestService {
         request.setResponder(responder);
         request.setStatus(RequestStatus.ACCEPTED);
         request.setAcceptedAt(OffsetDateTime.now());
+        request.setAcceptDeadlineAt(OffsetDateTime.now().plusMinutes(5));
         request.setIsAnonymousResponder(dto.getAcceptAnonymously() && responder.getIsAnonymous());
 
         request = requestRepository.save(request);
@@ -401,44 +426,7 @@ public class RequestServiceImpl implements RequestService {
 
         return mapToDetailResponse(request, null);
     }
-    /*public RequestDetailResponse confirmDelivery(UUID requestId, UUID requesterId) {
-        Request request = requestRepository.findByIdWithLock(requestId)
-                .orElseThrow(() -> new ResourceNotFoundException("Request no encontrada"));
 
-        // Validaciones
-        if (!request.getRequester().getId().equals(requesterId)) {
-            throw new UnauthorizedException("No eres el creador de esta request");
-        }
-
-        if (request.getStatus() != RequestStatus.DELIVERED) {
-            throw new BadRequestException("No hay contenido pendiente de confirmar");
-        }
-
-        // Procesar pago al responder
-        walletService.releaseFrozenBalance(requesterId, BigDecimal.valueOf(request.getRewardNears()));
-        walletService.processRequestEarning(
-                request.getResponder().getId(),
-                requestId,
-                BigDecimal.valueOf(request.getRewardNears()),
-                BigDecimal.valueOf(request.getCommissionAmount())
-        );
-
-        // Actualizar estado
-        request.setStatus(RequestStatus.COMPLETED);
-        request.setCompletedAt(OffsetDateTime.now());
-
-        request = requestRepository.save(request);
-
-        log.info("Request {} completada. Pago de {} Nears transferido a {}",
-                requestId, request.getFinalReward(), request.getResponder().getId());
-
-        return mapToDetailResponse(request, null);
-    }*/
-
-    // ============================================
-    // RECHAZAR ENTREGA
-    // ============================================
-    
     @Override
     @Transactional
     public RequestDetailResponse rejectDelivery(UUID requestId, UUID requesterId, String reason) {
@@ -453,14 +441,69 @@ public class RequestServiceImpl implements RequestService {
             throw new BadRequestException("No hay contenido pendiente de revisar");
         }
 
-        // Marcar como disputa
-        request.setStatus(RequestStatus.DISPUTED);
+        // Verificar que aún tiene tiempo restante
+        boolean hasTimeLeft = OffsetDateTime.now().isBefore(request.getExpiresAt());
 
-        request = requestRepository.save(request);
+        // Penalizar al requester: -0.1 en su promedio de reputación
+        try {
+            penalizeRequester(requesterId);
+        } catch (Exception e) {
+            log.warn("Error aplicando penalización al requester {}: {}", requesterId, e.getMessage());
+        }
 
-        log.info("Entrega rechazada para request {}. Razón: {}", requestId, reason);
+        if (hasTimeLeft) {
+            // Re-publicar la request con tiempo restante
+            releaseRequest(request, "Entrega rechazada por el requester: " + reason);
 
-        return mapToDetailResponse(request, null);
+            // Limpiar media entregada
+            requestMediaRepository.deleteByRequestId(requestId);
+
+            log.info("Request {} rechazada y re-publicada con tiempo restante. Requester {} penalizado.",
+                    requestId, requesterId);
+        } else {
+            // Si ya no tiene tiempo, expirar y reembolsar
+            request.setStatus(RequestStatus.EXPIRED);
+            request.setResponder(null);
+            requestRepository.save(request);
+
+            walletService.processRequestRefund(
+                    requesterId, requestId, BigDecimal.valueOf(request.getRewardNears())
+            );
+
+            // Limpiar media
+            requestMediaRepository.deleteByRequestId(requestId);
+
+            log.info("Request {} rechazada sin tiempo restante. Expirada y reembolsada.", requestId);
+        }
+
+        // Recargar para devolver la respuesta actualizada
+        Request updatedRequest = requestRepository.findByIdWithUsers(requestId)
+                .orElseThrow(() -> new ResourceNotFoundException("Request no encontrada"));
+
+        return mapToDetailResponse(updatedRequest, null);
+    }
+
+    /**
+     * Penaliza al requester bajando 0.1 de su promedio de reputación
+     */
+    private void penalizeRequester(UUID requesterId) {
+        User requester = userRepository.findById(requesterId)
+                .orElseThrow(() -> new ResourceNotFoundException("Usuario no encontrado"));
+
+        BigDecimal currentReputation = requester.getReputationStars();
+        BigDecimal penalty = new BigDecimal("0.1");
+        BigDecimal newReputation = currentReputation.subtract(penalty);
+
+        // No bajar de 0
+        if (newReputation.compareTo(BigDecimal.ZERO) < 0) {
+            newReputation = BigDecimal.ZERO;
+        }
+
+        requester.setReputationStars(newReputation);
+        userRepository.save(requester);
+
+        log.info("Requester {} penalizado: {} → {} estrellas",
+                requesterId, currentReputation, newReputation);
     }
 
     // ============================================
@@ -647,14 +690,38 @@ public class RequestServiceImpl implements RequestService {
     // ============================================
     // TAREAS PROGRAMADAS
     // ============================================
-    
+
     @Override
     @Scheduled(fixedRate = 60000) // Cada minuto
     @Transactional
     public void expireOldRequests() {
-        int expired = requestRepository.expireOldRequests(OffsetDateTime.now());
-        if (expired > 0) {
-            log.info("Se expiraron {} requests", expired);
+        OffsetDateTime now = OffsetDateTime.now();
+
+        // Buscar requests PENDING que expiraron
+        List<Request> expiredPending = requestRepository.findByStatusAndExpiresAtBefore(
+                RequestStatus.PENDING, now);
+
+        for (Request request : expiredPending) {
+            try {
+                request.setStatus(RequestStatus.EXPIRED);
+                requestRepository.save(request);
+
+                // Reembolsar Nears congelados
+                walletService.processRequestRefund(
+                        request.getRequester().getId(),
+                        request.getId(),
+                        BigDecimal.valueOf(request.getRewardNears())
+                );
+
+                log.info("Request PENDING {} expirada. Reembolso de {} Nears.",
+                        request.getId(), request.getRewardNears());
+            } catch (Exception e) {
+                log.error("Error expirando request {}: {}", request.getId(), e.getMessage());
+            }
+        }
+
+        if (!expiredPending.isEmpty()) {
+            log.info("Se expiraron {} requests PENDING", expiredPending.size());
         }
     }
 
@@ -679,10 +746,95 @@ public class RequestServiceImpl implements RequestService {
         }
     }
 
+    /**
+     * Cada 30 segundos: liberar requests ACCEPTED que pasaron 5 min sin delivery
+     * y re-publicarlas como PENDING con tiempo restante.
+     */
+    @Scheduled(fixedRate = 30000) // Cada 30 segundos
+    @Transactional
+    public void releaseExpiredAcceptedRequests() {
+        OffsetDateTime now = OffsetDateTime.now();
+
+        // 1) ACCEPTED que pasaron el deadline de 5 min PERO aún tienen tiempo global
+        List<Request> pastDeadline = requestRepository.findAcceptedPastDeadline(now);
+        for (Request request : pastDeadline) {
+            try {
+                releaseRequest(request, "El responder no envió contenido en 5 minutos");
+            } catch (Exception e) {
+                log.error("Error liberando request {}: {}", request.getId(), e.getMessage());
+            }
+        }
+
+        // 2) ACCEPTED cuyo tiempo global también expiró → EXPIRED + reembolso
+        List<Request> acceptedAndExpired = requestRepository.findAcceptedAndExpired(now);
+        for (Request request : acceptedAndExpired) {
+            try {
+                request.setStatus(RequestStatus.EXPIRED);
+                request.setResponder(null);
+                request.setAcceptedAt(null);
+                request.setAcceptDeadlineAt(null);
+                requestRepository.save(request);
+
+                // Reembolsar
+                walletService.processRequestRefund(
+                        request.getRequester().getId(),
+                        request.getId(),
+                        BigDecimal.valueOf(request.getRewardNears())
+                );
+
+                log.info("Request ACCEPTED {} expirada globalmente. Reembolso procesado.", request.getId());
+            } catch (Exception e) {
+                log.error("Error expirando request accepted {}: {}", request.getId(), e.getMessage());
+            }
+        }
+
+        if (!pastDeadline.isEmpty() || !acceptedAndExpired.isEmpty()) {
+            log.info("Liberadas {} requests (deadline), Expiradas {} requests (tiempo global)",
+                    pastDeadline.size(), acceptedAndExpired.size());
+        }
+    }
+
     // ============================================
     // MÉTODOS AUXILIARES
     // ============================================
-    
+
+    /**
+     * Libera una request: quita al responder y la re-publica como PENDING
+     * con el tiempo restante que le quede.
+     */
+    private void releaseRequest(Request request, String reason) {
+        UUID oldResponderId = request.getResponder() != null ? request.getResponder().getId() : null;
+
+        // Re-publicar como PENDING
+        request.setStatus(RequestStatus.PENDING);
+        request.setResponder(null);
+        request.setAcceptedAt(null);
+        request.setAcceptDeadlineAt(null);
+        request.setDeliveredAt(null);
+
+        // Limpiar media entregada si la hubo (para DELIVERED→PENDING)
+        // No borrar de Cloudinary aquí, solo desvincular
+
+        request = requestRepository.save(request);
+
+        log.info("Request {} liberada y re-publicada. Motivo: {}. Tiempo restante: {} segundos",
+                request.getId(), reason,
+                java.time.temporal.ChronoUnit.SECONDS.between(OffsetDateTime.now(), request.getExpiresAt()));
+
+        // Notificar al responder anterior
+
+        if (oldResponderId != null) {
+            try {
+                notificationService.sendToUser(
+                        oldResponderId,
+                        NotificationData.requestReleased(request.getId(), reason)
+                );
+            } catch (Exception e) {
+                log.warn("Error notificando liberación: {}", e.getMessage());
+            }
+        }
+    }
+
     private Point createPoint(double longitude, double latitude) {
         return geometryFactory.createPoint(new Coordinate(longitude, latitude));
     }
@@ -717,12 +869,31 @@ public class RequestServiceImpl implements RequestService {
     }
 
     private void updateUserReputation(UUID userId) {
-        BigDecimal avgRating = requestRepository.calculateAverageRating(userId);
-        if (avgRating != null) {
+        BigDecimal avgAsResponder = requestRepository.calculateAverageRatingAsResponder(userId);
+        BigDecimal avgAsRequester = requestRepository.calculateAverageRatingAsRequester(userId);
+        Long countAsResponder = requestRepository.countRatingsAsResponder(userId);
+        Long countAsRequester = requestRepository.countRatingsAsRequester(userId);
+
+        long totalCount = (countAsResponder != null ? countAsResponder : 0)
+                + (countAsRequester != null ? countAsRequester : 0);
+
+        if (totalCount > 0) {
+            // Promedio ponderado de ambos roles
+            double sumResponder = (avgAsResponder != null ? avgAsResponder.doubleValue() : 0)
+                    * (countAsResponder != null ? countAsResponder : 0);
+            double sumRequester = (avgAsRequester != null ? avgAsRequester.doubleValue() : 0)
+                    * (countAsRequester != null ? countAsRequester : 0);
+
+            BigDecimal combinedAvg = BigDecimal.valueOf((sumResponder + sumRequester) / totalCount)
+                    .setScale(2, java.math.RoundingMode.HALF_UP);
+
             User user = userRepository.findById(userId).orElseThrow();
-            user.setReputationStars(avgRating);
-            user.setTotalRatingsReceived(user.getTotalRatingsReceived() + 1);
+            user.setReputationStars(combinedAvg);
+            user.setTotalRatingsReceived((int) totalCount);
             userRepository.save(user);
+
+            log.info("Reputación actualizada para usuario {}: {} estrellas ({} valoraciones)",
+                    userId, combinedAvg, totalCount);
         }
     }
 
@@ -918,4 +1089,5 @@ public class RequestServiceImpl implements RequestService {
         }
         return "Usuario";
     }
+
 }

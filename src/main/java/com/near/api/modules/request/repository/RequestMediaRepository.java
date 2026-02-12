@@ -13,4 +13,6 @@ public interface RequestMediaRepository extends JpaRepository<RequestMedia, UUID
     List<RequestMedia> findByRequestIdOrderByCreatedAtAsc(UUID requestId);
 
     void deleteByRequestId(UUID requestId);
+
+
 }

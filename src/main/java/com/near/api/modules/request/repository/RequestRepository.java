@@ -98,6 +98,7 @@ public interface RequestRepository extends JpaRepository<Request, UUID> {
             @Param("lat") double lat,
             @Param("lng") double lng);
 
+
     // Requests cercanas modo "todos" (trust mode expirado o trust_mode = ALL)
     @Query(value = """
         SELECT r.* FROM requests r
@@ -178,8 +179,16 @@ public interface RequestRepository extends JpaRepository<Request, UUID> {
     Long countCompletedByResponderId(@Param("userId") UUID userId);
 
     @Query("SELECT AVG(r.responderRating) FROM Request r WHERE r.responder.id = :userId AND r.responderRating IS NOT NULL")
-    BigDecimal calculateAverageRating(@Param("userId") UUID userId);
+    BigDecimal calculateAverageRatingAsResponder(@Param("userId") UUID userId);
 
+    @Query("SELECT AVG(r.requesterRating) FROM Request r WHERE r.requester.id = :userId AND r.requesterRating IS NOT NULL")
+    BigDecimal calculateAverageRatingAsRequester(@Param("userId") UUID userId);
+
+    @Query("SELECT COUNT(r) FROM Request r WHERE r.responder.id = :userId AND r.responderRating IS NOT NULL")
+    Long countRatingsAsResponder(@Param("userId") UUID userId);
+
+    @Query("SELECT COUNT(r) FROM Request r WHERE r.requester.id = :userId AND r.requesterRating IS NOT NULL")
+    Long countRatingsAsRequester(@Param("userId") UUID userId);
     // === Actualización de estados ===
 
     @Modifying
@@ -196,4 +205,18 @@ public interface RequestRepository extends JpaRepository<Request, UUID> {
             "LEFT JOIN FETCH r.responder " +
             "WHERE r.id = :id")
     Optional<Request> findByIdWithUsers(@Param("id") UUID id);
+
+    // Buscar requests ACCEPTED que pasaron su deadline (5 min sin enviar contenido)
+    @Query("SELECT r FROM Request r " +
+            "LEFT JOIN FETCH r.requester " +
+            "LEFT JOIN FETCH r.responder " +
+            "WHERE r.status = 'ACCEPTED' AND r.acceptDeadlineAt < :now AND r.expiresAt > :now")
+    List<Request> findAcceptedPastDeadline(@Param("now") OffsetDateTime now);
+
+    // Buscar requests ACCEPTED cuyo tiempo global también expiró
+    @Query("SELECT r FROM Request r " +
+            "LEFT JOIN FETCH r.requester " +
+            "LEFT JOIN FETCH r.responder " +
+            "WHERE r.status = 'ACCEPTED' AND r.expiresAt < :now")
+    List<Request> findAcceptedAndExpired(@Param("now") OffsetDateTime now);
 }

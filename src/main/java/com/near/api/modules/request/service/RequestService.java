@@ -46,6 +46,8 @@ public interface RequestService {
     
     Page<RequestResponse> getActiveRequests(UUID userId, Pageable pageable);
 
+    void releaseExpiredAcceptedRequests();
+
     // === Tareas programadas ===
     void expireOldRequests();
     
