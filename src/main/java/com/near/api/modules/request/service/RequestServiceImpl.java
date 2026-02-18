@@ -172,18 +172,30 @@ public class RequestServiceImpl implements RequestService {
     // ============================================
     // CANCELAR REQUEST
     // ============================================
-    
+
     @Override
     @Transactional
     public void cancelRequest(UUID requestId, UUID userId, String reason) {
         Request request = requestRepository.findByIdWithLock(requestId)
                 .orElseThrow(() -> new ResourceNotFoundException("Request no encontrada"));
 
-        // Solo el requester puede cancelar
-        if (!request.getRequester().getId().equals(userId)) {
-            throw new UnauthorizedException("Solo el creador puede cancelar la request");
+        // Determinar rol del usuario
+        boolean isRequester = request.getRequester().getId().equals(userId);
+        boolean isResponder = request.getResponder() != null && request.getResponder().getId().equals(userId);
+
+        // Permitir cancelar al requester O al responder (solo si está ACCEPTED)
+        if (!isRequester && !(isResponder && request.getStatus() == RequestStatus.ACCEPTED)) {
+            throw new UnauthorizedException("No tienes permiso para cancelar esta request");
         }
 
+        // Si el responder cancela, solo liberar (re-publicar como PENDING)
+        if (isResponder) {
+            releaseRequest(request, "Responder abortó la aceptación");
+            log.info("Request {} liberada por responder {}", requestId, userId);
+            return;
+        }
+
+        // === Flujo de cancelación por el REQUESTER ===
 
         if (request.getStatus() != RequestStatus.PENDING && request.getStatus() != RequestStatus.ACCEPTED) {
             throw new BadRequestException("Solo se pueden cancelar requests pendientes o aceptadas");
@@ -211,8 +223,7 @@ public class RequestServiceImpl implements RequestService {
         // Reembolsar al requester
         walletService.processRequestRefund(userId, requestId, BigDecimal.valueOf(request.getRewardNears()));
 
-        //Notificar al responder si estaba aceptada
-
+        // Notificar al responder si estaba aceptada
         if (oldResponderId != null) {
             try {
                 notificationService.sendToUser(
@@ -226,7 +237,6 @@ public class RequestServiceImpl implements RequestService {
 
         log.info("Request {} cancelada por usuario {}", requestId, userId);
     }
-
     // ============================================
     // ACEPTAR REQUEST
     // ============================================
